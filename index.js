@@ -1,60 +1,57 @@
 require("dotenv").config();
-
 const express = require("express");
 const cors = require("cors");
 const { MongoClient } = require("mongodb");
-
+const { lipaNaMpesa } = require("./mpesa"); // Import MPESA helper
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- MongoDB setup ---
-const uri = process.env.MONGO_URI; // your Render env variable
-const client = new MongoClient(uri);
+// ======================
+// MONGODB SETUP
+// ======================
+const client = new MongoClient(process.env.MONGO_URI);
+let db, playersCollection, houseCollection;
 
-let db;
-let playersCollection;
-let houseCollection;
-
-// Connect to MongoDB
 async function connectDB() {
-  try {
-    await client.connect();
-    db = client.db("guessgame"); // database name
-    playersCollection = db.collection("players");
-    houseCollection = db.collection("houseBank");
+  await client.connect();
+  db = client.db("guessgame");
+  playersCollection = db.collection("players");
+  houseCollection = db.collection("houseBank");
 
-    // Initialize houseBank if not present
-    const houseExists = await houseCollection.findOne({ _id: "mainHouse" });
-    if (!houseExists) {
-      await houseCollection.insertOne({ _id: "mainHouse", balance: 0 });
-    }
-
-    console.log("✅ Connected to MongoDB");
-  } catch (err) {
-    console.error("❌ MongoDB connection failed:", err);
+  // Initialize houseBank if not exists
+  const houseExists = await houseCollection.findOne({ _id: "mainHouse" });
+  if (!houseExists) {
+    await houseCollection.insertOne({ _id: "mainHouse", balance: 0 });
   }
+
+  console.log("✅ Connected to MongoDB");
 }
 
 connectDB();
 
-// --- Utility ---
+// ======================
+// UTILITY
+// ======================
 function generateSecret() {
   return Math.floor(Math.random() * 20) + 1;
 }
 
-// --- LOGIN ---
+// ======================
+// LOGIN ROUTE
+// ======================
 app.post("/login", async (req, res) => {
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: "Username required" });
 
   let player = await playersCollection.findOne({ username });
-
   if (!player) {
     player = {
       username,
+      phone: req.body.phone || null,
       wallet: 100,
       secretNumber: generateSecret(),
       remainingGuesses: 3,
@@ -64,19 +61,20 @@ app.post("/login", async (req, res) => {
   }
 
   const house = await houseCollection.findOne({ _id: "mainHouse" });
-
   res.json({
     wallet: player.wallet,
     houseBank: house.balance,
   });
 });
 
-// --- PLAY ROUND ---
+// ======================
+// GUESS ROUTE
+// ======================
 app.post("/guess", async (req, res) => {
   const { username, guess } = req.body;
   const player = await playersCollection.findOne({ username });
-
   if (!player) return res.status(400).json({ error: "Player not found" });
+
   if (player.wallet < 10 && player.remainingGuesses === 3)
     return res.status(400).json({ error: "Not enough money" });
 
@@ -90,7 +88,6 @@ app.post("/guess", async (req, res) => {
 
   player.remainingGuesses--;
 
-  // --- Player wins ---
   if (guess === player.secretNumber) {
     let winnings;
     if (player.remainingGuesses === 2) winnings = 35;
@@ -100,7 +97,6 @@ app.post("/guess", async (req, res) => {
     player.wallet += winnings;
     house.balance -= winnings;
 
-    // Reset for next round
     player.secretNumber = generateSecret();
     player.remainingGuesses = 3;
 
@@ -115,14 +111,11 @@ app.post("/guess", async (req, res) => {
     });
   }
 
-  // --- Player loses round ---
   if (player.remainingGuesses <= 0) {
     const correctNumber = player.secretNumber;
     player.secretNumber = generateSecret();
     player.remainingGuesses = 3;
-
     await playersCollection.updateOne({ username }, { $set: player });
-
     return res.json({
       result: "lose",
       correctNumber,
@@ -131,9 +124,7 @@ app.post("/guess", async (req, res) => {
     });
   }
 
-  // --- Player guess too high or low ---
   await playersCollection.updateOne({ username }, { $set: player });
-
   res.json({
     result: guess > player.secretNumber ? "high" : "low",
     remainingGuesses: player.remainingGuesses,
@@ -141,15 +132,133 @@ app.post("/guess", async (req, res) => {
   });
 });
 
-// --- GET HOUSE BANK (Admin only later) ---
+// ======================
+// GET HOUSE BANK
+// ======================
 app.get("/house", async (req, res) => {
   const house = await houseCollection.findOne({ _id: "mainHouse" });
   res.json({ houseBank: house.balance });
 });
 
-// --- Start server ---
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// ======================
+// MPESA PAYMENT
+// ======================
+app.post("/pay", async (req, res) => {
+  const { username, phone, amount } = req.body;
+  if (!username || !phone || !amount)
+    return res
+      .status(400)
+      .json({ error: "username, phone, and amount required" });
+
+  const player = await playersCollection.findOne({ username });
+  if (!player) return res.status(404).json({ error: "Player not found" });
+
+  try {
+    const response = await lipaNaMpesa(phone, amount);
+    res.json({ message: "STK Push initiated", response });
+  } catch (err) {
+    console.error("MPESA ERROR:", err.response?.data || err.message);
+    res.status(500).json({
+      error: "Failed to initiate payment",
+      details: err.response?.data || err.message,
+    });
+  }
 });
 
-// mongodb+srv://cliffordmwangi924_db_user:Phenomenon05@cluster0.7nsqy7b.mongodb.net/?appName=Cluster0
+// ======================
+// MPESA CALLBACK
+// ======================
+app.post("/mpesa/callback", async (req, res) => {
+  try {
+    // Daraja sends the callback under Body.stkCallback
+    const callback = req.body?.Body?.stkCallback;
+
+    if (!callback) {
+      console.log("⚠️ Unexpected callback format:", req.body);
+      return res.status(400).json({ message: "Invalid callback format" });
+    }
+
+    const {
+      ResultCode,
+      ResultDesc,
+      CallbackMetadata,
+      MerchantRequestID,
+      CheckoutRequestID,
+    } = callback;
+
+    console.log(
+      "📩 MPESA CALLBACK RECEIVED:",
+      JSON.stringify(callback, null, 2),
+    );
+
+    if (ResultCode === 0) {
+      // Payment successful
+
+      const items = CallbackMetadata.Item;
+
+      // Extract data from callback
+      const amountObj = items.find((i) => i.Name === "Amount");
+      const phoneObj = items.find((i) => i.Name === "PhoneNumber");
+      const receiptObj = items.find((i) => i.Name === "MpesaReceiptNumber");
+      const accountRefObj = items.find((i) => i.Name === "AccountReference"); // <-- This is your username
+
+      const amount = amountObj?.Value || 0;
+      const phone = phoneObj?.Value; // For logging/debugging
+      const receipt = receiptObj?.Value; // Transaction receipt
+      const username = accountRefObj?.Value; // This is what we use to update wallet
+
+      if (!username) {
+        console.log("⚠️ AccountReference (username) missing in callback");
+        return res.status(400).json({ message: "AccountReference missing" });
+      }
+
+      // Update player wallet using username (recommended)
+      const player = await playersCollection.findOne({ username });
+      if (!player) {
+        console.log(`⚠️ No player found with username: ${username}`);
+      } else {
+        const newWallet = (player.wallet || 0) + amount;
+        await playersCollection.updateOne(
+          { username },
+          { $set: { wallet: newWallet } },
+        );
+        console.log(
+          `✅ Updated wallet for ${username}: +${amount}, new wallet = ${newWallet}`,
+        );
+      }
+
+      // Optional: log phone and receipt for reference
+      console.log(`📱 Phone used: ${phone}, Receipt: ${receipt}`);
+
+      return res
+        .status(200)
+        .json({ message: "Payment processed successfully" });
+    } else {
+      // Payment failed
+      console.log(`❌ Payment failed: ${ResultDesc}`);
+      return res
+        .status(200)
+        .json({ message: "Payment failed", details: ResultDesc });
+    }
+  } catch (err) {
+    console.error("❌ CALLBACK HANDLER ERROR:", err.message);
+    res
+      .status(500)
+      .json({ message: "Callback processing error", error: err.message });
+  }
+});
+
+// ======================
+// TEST ROUTE
+// ======================
+app.get("/test", (req, res) => {
+  console.log("TEST ROUTE HIT");
+  res.json({ message: "Server working" });
+});
+
+// ======================
+// START SERVER
+// ======================
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+});
