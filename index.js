@@ -134,6 +134,38 @@ app.post("/guess", async (req, res) => {
     wallet: player.wallet,
   });
 });
+// ======================
+// RESET ROUND
+// ======================
+app.post("/reset", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+
+    const player = await playersCollection.findOne({ username });
+    if (!player) {
+      return res.status(404).json({ error: "Player not found" });
+    }
+
+    player.secretNumber = generateSecret();
+    player.remainingGuesses = 3;
+
+    await playersCollection.updateOne({ username }, { $set: player });
+
+    console.log(`🔄 Round reset for ${username}`);
+
+    res.json({
+      message: "Round reset",
+      remainingGuesses: 3,
+    });
+  } catch (err) {
+    console.error("❌ RESET ERROR:", err.message);
+    res.status(500).json({ error: "Reset failed" });
+  }
+});
 
 // ======================
 // GET HOUSE BANK
@@ -181,13 +213,12 @@ app.post("/mpesa/callback", async (req, res) => {
       return res.status(400).json({ message: "Invalid callback format" });
     }
 
-    const {
-      ResultCode,
-      ResultDesc,
-      CallbackMetadata,
-    } = callback;
+    const { ResultCode, ResultDesc, CallbackMetadata } = callback;
 
-    console.log("📩 MPESA CALLBACK RECEIVED:", JSON.stringify(callback, null, 2));
+    console.log(
+      "📩 MPESA CALLBACK RECEIVED:",
+      JSON.stringify(callback, null, 2),
+    );
 
     if (ResultCode === 0) {
       const items = CallbackMetadata.Item;
@@ -205,18 +236,29 @@ app.post("/mpesa/callback", async (req, res) => {
       if (!player) console.log(`⚠️ No player found with username: ${username}`);
       else {
         const newWallet = (player.wallet || 0) + amount;
-        await playersCollection.updateOne({ username }, { $set: { wallet: newWallet } });
-        console.log(`✅ Updated wallet for ${username}: +${amount}, new wallet = ${newWallet}`);
+        await playersCollection.updateOne(
+          { username },
+          { $set: { wallet: newWallet } },
+        );
+        console.log(
+          `✅ Updated wallet for ${username}: +${amount}, new wallet = ${newWallet}`,
+        );
       }
 
-      return res.status(200).json({ message: "Payment processed successfully" });
+      return res
+        .status(200)
+        .json({ message: "Payment processed successfully" });
     } else {
       console.log(`❌ Payment failed: ${ResultDesc}`);
-      return res.status(200).json({ message: "Payment failed", details: ResultDesc });
+      return res
+        .status(200)
+        .json({ message: "Payment failed", details: ResultDesc });
     }
   } catch (err) {
     console.error("❌ CALLBACK HANDLER ERROR:", err.message);
-    res.status(500).json({ message: "Callback processing error", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Callback processing error", error: err.message });
   }
 });
 
@@ -265,10 +307,6 @@ app.get("/test", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
-
-
-
 
 // require("dotenv").config();
 // const express = require("express");
