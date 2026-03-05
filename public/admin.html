@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Admin Dashboard</title>
+    <style>
+      body {
+        font-family: Arial;
+        background: #111;
+        color: white;
+        padding: 20px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+      }
+      th,
+      td {
+        border: 1px solid #444;
+        padding: 10px;
+        text-align: center;
+      }
+      button {
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      .paid {
+        background: green;
+        color: white;
+      }
+      .pending {
+        background: orange;
+        color: black;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>🏦 Admin Dashboard</h2>
+
+    <h3>House Balance: <span id="houseBalance">Loading...</span></h3>
+
+    <h3>Withdrawals</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Phone</th>
+          <th>Gross</th>
+          <th>Fee</th>
+          <th>Net</th>
+          <th>Status</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="withdrawalsTable"></tbody>
+    </table>
+
+    <script>
+      const backend = window.location.origin;
+
+      async function loadHouse() {
+        const res = await fetch(backend + "/house");
+        const data = await res.json();
+        document.getElementById("houseBalance").textContent =
+          data.houseBank + " KES";
+      }
+
+      async function loadWithdrawals() {
+        const res = await fetch(backend + "/admin/withdrawals");
+        const withdrawals = await res.json();
+
+        const table = document.getElementById("withdrawalsTable");
+        table.innerHTML = "";
+
+        withdrawals.forEach((w) => {
+          const row = document.createElement("tr");
+
+          row.innerHTML = `
+      <td>${w.username}</td>
+      <td>${w.phone}</td>
+      <td>${w.grossAmount}</td>
+      <td>${w.fee}</td>
+      <td>${w.netAmount}</td>
+      <td class="${w.status === "paid" ? "paid" : "pending"}">${w.status}</td>
+      <td>
+        ${
+          w.status === "pending"
+            ? `<button onclick="markPaid('${w._id}')">Mark Paid</button>`
+            : "—"
+        }
+      </td>
+    `;
+
+          table.appendChild(row);
+        });
+      }
+
+      async function markPaid(id) {
+        await fetch(backend + "/admin/confirm-withdrawal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ withdrawalId: id }),
+        });
+
+        loadWithdrawals();
+      }
+
+      loadHouse();
+      loadWithdrawals();
+    </script>
+  </body>
+</html>
