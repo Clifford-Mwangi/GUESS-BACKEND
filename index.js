@@ -326,7 +326,7 @@ app.get("/admin/withdrawals", async (req, res) => {
     .toArray();
 
   res.json(withdrawals);
-}); 
+});
 // ======================
 // HOUSE BALANCE
 // ======================
