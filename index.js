@@ -47,6 +47,14 @@ app.post("/login", async (req, res) => {
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: "Username required" });
 
+  // Force Kenyan phone number format
+  const phoneRegex = /^07\d{8}$/;
+  if (!phoneRegex.test(username)) {
+    return res.status(400).json({
+      error: "Enter phone number in format 07XXXXXXXX",
+    });
+  }
+
   let player = await playersCollection.findOne({ username });
 
   if (!player) {
@@ -178,6 +186,9 @@ app.post("/pay", async (req, res) => {
 
   const player = await playersCollection.findOne({ username });
   if (!player) return res.status(404).json({ error: "Player not found" });
+
+  // 🔹 UPDATE PLAYER PHONE (if new or changed)
+  await playersCollection.updateOne({ username }, { $set: { phone: phone } });
 
   try {
     const response = await lipaNaMpesa(phone, amount, username);
